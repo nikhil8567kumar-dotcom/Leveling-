@@ -47,6 +47,8 @@ body { background:var(--bg-dark); color:var(--text-white); padding:16px 14px 60p
 .progress-meta { display:flex; justify-content:space-between; font-size:11px; color:var(--text-muted); font-weight:600; margin-bottom:8px; }
 .progress-track { height:7px; background:var(--bg-subtle); border-radius:999px; overflow:hidden; }
 .progress-fill { height:100%; background:linear-gradient(90deg, #7b2cbf, #c77dff); border-radius:999px; transition:width 0.4s ease; box-shadow:0 0 10px var(--neon-purple-glow); }
+.hunter-level-line { display:flex; justify-content:space-between; gap:8px; margin-top:8px; font-size:10px; color:var(--text-muted); font-weight:700; }
+.hunter-level-line strong { color:var(--accent-cyan); font-weight:900; }
 
 /* Growth Graph */
 .graph-title-row { display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; }
@@ -127,6 +129,7 @@ canvas { width:100%; height:100%; }
     <span id="nextRankText">Next: 2,000 EXP (D)</span>
   </div>
   <div class="progress-track"><div class="progress-fill" id="expProgressBar" style="width:0%;"></div></div>
+  <div class="hunter-level-line"><span id="hunterLevelText"><strong>Hunter Level 1</strong></span><span id="hunterLevelProgress">0 / 1,000 EXP to next level</span></div>
 </div>
 
 <!-- Growth Graph -->
@@ -613,6 +616,11 @@ function render() {
   document.getElementById('tierMultiplierText').innerText = `⚡ Tier ${curTier}: +${curDailyExp} EXP / Day ${curTier === 5 ? '(MAX)' : ''}`;
 
   document.getElementById('expText').innerText = `${state.exp.toLocaleString()} EXP`;
+  // Hunter level is a compact second progression: every 1,000 total EXP adds one level.
+  const hunterLevel = Math.floor(Math.max(0, state.exp) / 1000) + 1;
+  const levelExp = Math.max(0, state.exp) % 1000;
+  document.getElementById('hunterLevelText').innerHTML = `<strong>Hunter Level ${hunterLevel}</strong>`;
+  document.getElementById('hunterLevelProgress').innerText = `${levelExp.toLocaleString()} / 1,000 EXP to next level`;
   if (nextRank) {
     const prevCap = curRank.exp;
     const nextCap = nextRank.exp;
