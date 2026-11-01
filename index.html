@@ -144,9 +144,9 @@ canvas { width:100%; height:100%; }
 <!-- Combat Calendar -->
 <div class="card">
   <div style="display:flex; justify-content:space-between; align-items:center;">
-    <button class="btn-top btn-hist" onclick="changeCalendarMonth(-1)" aria-label="Previous month">‹</button>
+    <button class="btn-top btn-hist" id="calendarPrevBtn" onclick="changeCalendarMonth(-1)" aria-label="Previous month">‹</button>
     <span class="graph-title" id="calendarMonthLabel">Combat Calendar</span>
-    <button class="btn-top btn-hist" onclick="changeCalendarMonth(1)" aria-label="Next month">›</button>
+    <span style="width:32px"></span>
   </div>
   <div class="cal-grid" id="calGrid"></div>
   <div style="display:flex; justify-content:center; gap:16px; font-size:10px; color:var(--text-muted); font-weight:700;">
@@ -185,7 +185,7 @@ canvas { width:100%; height:100%; }
 
 <div class="section-hdr">System & Backups</div>
 <div class="card">
-  <div style="font-size:12px;color:var(--text-muted);line-height:1.5;margin-bottom:10px;">Your progress is stored in this browser on this device. Export a backup before clearing browser data or changing phones.</div>
+  <div style="font-size:12px;color:var(--text-muted);line-height:1.5;margin-bottom:10px;">Your progress is stored in this browser on this device. Export a backup before clearing browser data or changing phones. There is no visible one-tap reset button, to protect against accidental data loss.</div>
   <div style="display:flex;gap:8px;">
     <button class="btn-add" style="padding:11px;flex:1" onclick="exportBackup()">⬇ Export Backup</button>
     <button class="btn-add" style="padding:11px;flex:1" onclick="document.getElementById('backupFileInput').click()">⬆ Import Backup</button>
@@ -303,7 +303,8 @@ function loadState() {
       delete state.calendar[k];
     }
   });
-  if (!state.calendarMonth) state.calendarMonth = getLocalDateKey().slice(0,7);
+  const currentMonthKey = getLocalDateKey().slice(0,7);
+  if (!state.calendarMonth || state.calendarMonth > currentMonthKey) state.calendarMonth = currentMonthKey;
   lastQuickSlipBackup = state.lastQuickSlipBackup || null;
   if (lastQuickSlipBackup && lastQuickSlipBackup.expiresAt > Date.now()) {
     document.getElementById('quickUndoBtn').style.display = 'flex';
@@ -324,7 +325,8 @@ function loadState() {
 }
 
 function getDailyCleanExp(streakDays) {
-  const tier = Math.min(Math.floor(streakDays / 5) + 1, 5);
+  // 0–4 streak days: 100 EXP; 5–9: 200; 10–14: 300; 15–19: 400; 20+: 500.
+  const tier = Math.min(Math.floor(Math.max(0, streakDays) / 5) + 1, 5);
   return tier * 100;
 }
 
@@ -351,39 +353,64 @@ function formatDateKey(date) {
   return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
 }
 function changeCalendarMonth(delta) {
-  const d = parseMonthKey(state.calendarMonth || getLocalDateKey().slice(0,7));
+  const currentKey = getLocalDateKey().slice(0,7);
+  const d = parseMonthKey(state.calendarMonth || currentKey);
   d.setMonth(d.getMonth() + delta);
-  state.calendarMonth = formatDateKey(d).slice(0,7);
+  const targetKey = formatDateKey(d).slice(0,7);
+  // Never navigate to a future month.
+  if (targetKey > currentKey) return;
+  state.calendarMonth = targetKey;
   saveState();
 }
 function openDayModal(dayKey) {
+  if (dayKey > getLocalDateKey()) return;
   selectedDay = dayKey;
   const date = new Date(dayKey + 'T12:00:00');
   document.getElementById('modalDayTitle').innerText = date.toLocaleDateString(undefined,{month:'long',day:'numeric',year:'numeric'});
   const record = state.calendar[dayKey];
   const rate = getDailyCleanExp(state.streak);
-  document.getElementById('modalDaySub').innerText = record
-    ? `Status: ${record.status.toUpperCase()} (${record.expDelta >= 0 ? '+' : ''}${record.expDelta} EXP)`
-    : `Current Rate: +${rate} EXP / clean day`;
+  const isHistorical = dayKey < getLocalDateKey();
+  document.getElementById('modalDaySub').innerText = isHistorical
+    ? (record ? `Historical record: ${record.status.toUpperCase()} · No EXP changes for backfilled dates` : 'Past date · You can record status, but no EXP will be added or removed')
+    : (record ? `Status: ${record.status.toUpperCase()} (${record.expDelta >= 0 ? '+' : ''}${record.expDelta} EXP)` : `Current Rate: +${rate} EXP / clean day`);
   document.getElementById('calModal').classList.add('open');
 }
 
 function applyCalStatus(type) {
-  if (!selectedDay) return;
+  if (!selectedDay || selectedDay > getLocalDateKey()) return;
+  const today = getLocalDateKey();
+  const isHistorical = selectedDay < today;
   const prev = state.calendar[selectedDay];
+
   if (prev && prev.status === type && type !== 'clear') {
     closeModal('calModal');
     return;
   }
 
-  // Reverse only this calendar entry's recorded EXP transaction.
+  // Historical backfills are editable for record-keeping, but never award/revoke EXP or alter streak.
+  if (isHistorical) {
+    if (type === 'clear') {
+      delete state.calendar[selectedDay];
+    } else {
+      state.calendar[selectedDay] = {
+        status: type,
+        expDelta: 0,
+        prevStreak: prev && Number.isFinite(prev.prevStreak) ? prev.prevStreak : state.streak,
+        historicalOnly: true
+      };
+    }
+    closeModal('calModal');
+    saveState();
+    return;
+  }
+
+  // Today's entry is the only calendar entry that changes EXP/streak.
   if (prev) {
     state.exp = Math.max(0, state.exp - Number(prev.expDelta || 0));
-    if (prev.status === 'clean') {
-      // Restore the streak that existed before this entry only when it is still the expected successor.
-      if (state.streak === Number(prev.prevStreak || 0) + 1) state.streak = Number(prev.prevStreak || 0);
-    } else if (prev.status === 'slip') {
-      if (state.streak === 0 && Number.isFinite(prev.prevStreak)) state.streak = prev.prevStreak;
+    if (prev.status === 'clean' && state.streak === Number(prev.prevStreak || 0) + 1) {
+      state.streak = Number(prev.prevStreak || 0);
+    } else if (prev.status === 'slip' && state.streak === 0 && Number.isFinite(prev.prevStreak)) {
+      state.streak = prev.prevStreak;
     }
     delete state.calendar[selectedDay];
     state.history = state.history.filter(h => !(h.dateKey === selectedDay && h.source === 'calendar'));
@@ -404,18 +431,15 @@ function applyCalStatus(type) {
     state.streak = 0;
     state.calendar[selectedDay] = {status:'slip',expDelta:-actualLoss,prevStreak:previousStreak};
     state.history.unshift({day:selectedDay,status:'Relapse Slip',exp:-actualLoss,date:new Date().toLocaleDateString(),dateKey:selectedDay,source:'calendar'});
-  } else if (type !== 'clear') {
-    if (prev) state.calendar[selectedDay] = prev;
-    closeModal('calModal');
-    saveState();
-    return;
+  } else if (type === 'clear') {
+    delete state.calendar[selectedDay];
   }
 
-  state.exp = Math.max(0, state.exp);
   updateGraph();
   closeModal('calModal');
   saveState();
 }
+
 function openSlipModal() {
   const penalty = (state.streak < 5) ? 1100 : 200;
   document.getElementById('slipPenaltyExplanation').innerText = 
@@ -603,9 +627,14 @@ function render() {
   // Calendar
   const grid = document.getElementById('calGrid');
   grid.innerHTML = '';
-  const monthKey = state.calendarMonth || getLocalDateKey().slice(0,7);
+  const currentMonthKey = getLocalDateKey().slice(0,7);
+  let monthKey = state.calendarMonth || currentMonthKey;
+  if (monthKey > currentMonthKey) monthKey = currentMonthKey;
+  state.calendarMonth = monthKey;
   const monthDate = parseMonthKey(monthKey);
   document.getElementById('calendarMonthLabel').innerText = monthDate.toLocaleDateString(undefined,{month:'short',year:'numeric'}).toUpperCase();
+  const prevBtn = document.getElementById('calendarPrevBtn');
+  if (prevBtn) prevBtn.style.visibility = monthKey === currentMonthKey ? 'hidden' : 'visible';
   const firstWeekday = new Date(monthDate.getFullYear(),monthDate.getMonth(),1).getDay();
   const daysInMonth = new Date(monthDate.getFullYear(),monthDate.getMonth()+1,0).getDate();
   for (let blank=0; blank<firstWeekday; blank++) {
@@ -622,8 +651,17 @@ function render() {
       else if (rec.status === 'slip') { cell.classList.add('is-slip'); icon = '✕'; }
     }
     if (dayKey === getLocalDateKey()) cell.style.outline = '1px solid var(--accent-cyan)';
+    const isFuture = dayKey > getLocalDateKey();
+    if (isFuture) {
+      cell.style.opacity = '0.25';
+      cell.style.cursor = 'default';
+      cell.title = 'Future dates cannot be marked';
+    } else {
+      cell.style.cursor = 'pointer';
+      cell.title = 'Tap to mark or edit this day';
+      cell.onclick = () => openDayModal(dayKey);
+    }
     cell.innerHTML = `<span class="cal-num">${i}</span><span class="cal-status">${icon}</span>`;
-    cell.onclick = () => openDayModal(dayKey);
     grid.appendChild(cell);
   }
 
@@ -891,6 +929,7 @@ function checkDateBoundary() {
     lastObservedDate = today;
     resetDailyQuestsIfNeeded();
     ensureDailyTrial();
+    state.calendarMonth = today.slice(0,7);
     saveState();
   }
 }
