@@ -144,8 +144,9 @@ canvas { width:100%; height:100%; }
 <!-- Combat Calendar -->
 <div class="card">
   <div style="display:flex; justify-content:space-between; align-items:center;">
-    <span class="graph-title">Combat Calendar</span>
-    <span style="font-size:11px; font-family:monospace; color:var(--neon-purple); font-weight:700;">Nov 2026</span>
+    <button class="btn-top btn-hist" onclick="changeCalendarMonth(-1)" aria-label="Previous month">‹</button>
+    <span class="graph-title" id="calendarMonthLabel">Combat Calendar</span>
+    <button class="btn-top btn-hist" onclick="changeCalendarMonth(1)" aria-label="Next month">›</button>
   </div>
   <div class="cal-grid" id="calGrid"></div>
   <div style="display:flex; justify-content:center; gap:16px; font-size:10px; color:var(--text-muted); font-weight:700;">
@@ -181,6 +182,18 @@ canvas { width:100%; height:100%; }
   <button class="btn-add" onclick="addCustomQuest()">+ ADD</button>
 </div>
 <div id="customQuestsList"></div>
+
+<div class="section-hdr">System & Backups</div>
+<div class="card">
+  <div style="font-size:12px;color:var(--text-muted);line-height:1.5;margin-bottom:10px;">Your progress is stored in this browser on this device. Export a backup before clearing browser data or changing phones.</div>
+  <div style="display:flex;gap:8px;">
+    <button class="btn-add" style="padding:11px;flex:1" onclick="exportBackup()">⬇ Export Backup</button>
+    <button class="btn-add" style="padding:11px;flex:1" onclick="document.getElementById('backupFileInput').click()">⬆ Import Backup</button>
+  </div>
+  <input id="backupFileInput" type="file" accept="application/json,.json" style="display:none" onchange="importBackup(event)">
+  <button class="modal-btn" style="background:var(--bg-subtle);color:var(--accent-red);margin-top:10px;" onclick="resetAllProgress()">Reset All Progress</button>
+  <div id="systemMessage" style="font-size:11px;color:var(--text-muted);margin-top:8px;"></div>
+</div>
 
 <!-- Calendar Edit Modal -->
 <div class="modal-overlay" id="calModal">
@@ -257,7 +270,12 @@ let state = {
   quests: JSON.parse(JSON.stringify(DEFAULT_QUESTS)),
   customQuests: [],
   history: [],
-  graphHistory: [{ day:'Start', exp:0, pmo:0 }]
+  graphHistory: [{ day:'Start', exp:0, pmo:0 }],
+  lastQuestDate: null,
+  perfectDayClaims: {},
+  urgeClaims: {},
+  calendarMonth: null,
+  lastQuickSlipBackup: null
 };
 
 let lastQuickSlipBackup = null;
@@ -274,6 +292,33 @@ function loadState() {
     try { state = Object.assign(state, JSON.parse(saved)); } catch(e){}
   }
   if (!Array.isArray(state.trialHistory)) state.trialHistory = [];
+  if (!state.urgeClaims || typeof state.urgeClaims !== 'object') state.urgeClaims = {};
+  if (!state.perfectDayClaims || typeof state.perfectDayClaims !== 'object') state.perfectDayClaims = {};
+  if (!state.calendar || typeof state.calendar !== 'object') state.calendar = {};
+  // Migrate legacy day-number records into November 2026 date keys.
+  Object.keys(state.calendar).forEach(k => {
+    if (/^\d{1,2}$/.test(k)) {
+      const newKey = `2026-11-${String(Number(k)).padStart(2,'0')}`;
+      if (!state.calendar[newKey]) state.calendar[newKey] = state.calendar[k];
+      delete state.calendar[k];
+    }
+  });
+  if (!state.calendarMonth) state.calendarMonth = getLocalDateKey().slice(0,7);
+  lastQuickSlipBackup = state.lastQuickSlipBackup || null;
+  if (lastQuickSlipBackup && lastQuickSlipBackup.expiresAt > Date.now()) {
+    document.getElementById('quickUndoBtn').style.display = 'flex';
+    clearTimeout(quickUndoTimer);
+    quickUndoTimer = setTimeout(() => {
+      lastQuickSlipBackup = null;
+      state.lastQuickSlipBackup = null;
+      document.getElementById('quickUndoBtn').style.display = 'none';
+      saveState();
+    }, lastQuickSlipBackup.expiresAt - Date.now());
+  } else {
+    lastQuickSlipBackup = null;
+    state.lastQuickSlipBackup = null;
+  }
+  resetDailyQuestsIfNeeded();
   ensureDailyTrial();
   render();
 }
@@ -298,42 +343,50 @@ function getNextRank(exp) {
 }
 
 let selectedDay = null;
-function openDayModal(d) {
-  selectedDay = d;
-  document.getElementById('modalDayTitle').innerText = "November " + d + ", 2026";
-  const record = state.calendar[d];
+function parseMonthKey(key) {
+  const parts = key.split('-').map(Number);
+  return new Date(parts[0], parts[1]-1, 1);
+}
+function formatDateKey(date) {
+  return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
+}
+function changeCalendarMonth(delta) {
+  const d = parseMonthKey(state.calendarMonth || getLocalDateKey().slice(0,7));
+  d.setMonth(d.getMonth() + delta);
+  state.calendarMonth = formatDateKey(d).slice(0,7);
+  saveState();
+}
+function openDayModal(dayKey) {
+  selectedDay = dayKey;
+  const date = new Date(dayKey + 'T12:00:00');
+  document.getElementById('modalDayTitle').innerText = date.toLocaleDateString(undefined,{month:'long',day:'numeric',year:'numeric'});
+  const record = state.calendar[dayKey];
   const rate = getDailyCleanExp(state.streak);
-  let sub = "Current Rate: +" + rate + " EXP / clean day";
-  if (record) {
-    sub = `Status: ${record.status.toUpperCase()} (${record.expDelta >= 0 ? '+' : ''}${record.expDelta} EXP)`;
-  }
-  document.getElementById('modalDaySub').innerText = sub;
+  document.getElementById('modalDaySub').innerText = record
+    ? `Status: ${record.status.toUpperCase()} (${record.expDelta >= 0 ? '+' : ''}${record.expDelta} EXP)`
+    : `Current Rate: +${rate} EXP / clean day`;
   document.getElementById('calModal').classList.add('open');
 }
 
 function applyCalStatus(type) {
   if (!selectedDay) return;
-
   const prev = state.calendar[selectedDay];
-
-  // Re-clicking the same status is a no-op: never apply the same reward/penalty twice.
   if (prev && prev.status === type && type !== 'clear') {
     closeModal('calModal');
     return;
   }
 
-  // Reverse the previous calendar action before replacing or clearing it.
-  // The stored delta is the exact EXP amount that was actually awarded/deducted.
+  // Reverse only this calendar entry's recorded EXP transaction.
   if (prev) {
+    state.exp = Math.max(0, state.exp - Number(prev.expDelta || 0));
     if (prev.status === 'clean') {
-      state.exp = Math.max(0, state.exp - (prev.expDelta || 0));
-      state.streak = Math.max(0, state.streak - 1);
+      // Restore the streak that existed before this entry only when it is still the expected successor.
+      if (state.streak === Number(prev.prevStreak || 0) + 1) state.streak = Number(prev.prevStreak || 0);
     } else if (prev.status === 'slip') {
-      state.exp += Math.abs(prev.expDelta || 0);
-      state.streak = Number.isFinite(prev.prevStreak) ? prev.prevStreak : 0;
+      if (state.streak === 0 && Number.isFinite(prev.prevStreak)) state.streak = prev.prevStreak;
     }
     delete state.calendar[selectedDay];
-    state.history = state.history.filter(h => h.day !== selectedDay);
+    state.history = state.history.filter(h => !(h.dateKey === selectedDay && h.source === 'calendar'));
   }
 
   if (type === 'clean') {
@@ -341,42 +394,24 @@ function applyCalStatus(type) {
     const reward = getDailyCleanExp(previousStreak);
     state.streak = previousStreak + 1;
     state.exp += reward;
-    state.calendar[selectedDay] = {
-      status: 'clean',
-      expDelta: reward,
-      prevStreak: previousStreak
-    };
-    state.history.unshift({
-      day: selectedDay,
-      status: 'Clean',
-      exp: reward,
-      date: new Date().toLocaleDateString()
-    });
+    state.calendar[selectedDay] = {status:'clean', expDelta:reward, prevStreak:previousStreak};
+    state.history.unshift({day:selectedDay,status:'Clean',exp:reward,date:new Date().toLocaleDateString(),dateKey:selectedDay,source:'calendar'});
   } else if (type === 'slip') {
     const previousStreak = state.streak;
-    const maxPenalty = (previousStreak < 5) ? 1100 : 200;
-    const actualLoss = Math.min(state.exp, maxPenalty);
+    const maxPenalty = previousStreak < 5 ? 1100 : 200;
+    const actualLoss = Math.min(Math.max(0,state.exp), maxPenalty);
     state.exp -= actualLoss;
     state.streak = 0;
-    state.calendar[selectedDay] = {
-      status: 'slip',
-      expDelta: -actualLoss,
-      prevStreak: previousStreak
-    };
-    state.history.unshift({
-      day: selectedDay,
-      status: 'Relapse Slip',
-      exp: -actualLoss,
-      date: new Date().toLocaleDateString()
-    });
+    state.calendar[selectedDay] = {status:'slip',expDelta:-actualLoss,prevStreak:previousStreak};
+    state.history.unshift({day:selectedDay,status:'Relapse Slip',exp:-actualLoss,date:new Date().toLocaleDateString(),dateKey:selectedDay,source:'calendar'});
   } else if (type !== 'clear') {
-    // Unknown status: do not leave a partially changed record.
     if (prev) state.calendar[selectedDay] = prev;
     closeModal('calModal');
     saveState();
     return;
   }
 
+  state.exp = Math.max(0, state.exp);
   updateGraph();
   closeModal('calModal');
   saveState();
@@ -396,8 +431,11 @@ function executeSlip() {
   const actualLoss = Math.min(state.exp, maxPenalty);
   lastQuickSlipBackup = {
     exp: state.exp,
-    streak: state.streak
+    streak: state.streak,
+    history: state.history.slice(),
+    expiresAt: Date.now() + 10000
   };
+  state.lastQuickSlipBackup = lastQuickSlipBackup;
   state.exp = state.exp - actualLoss;
   state.streak = 0;
   state.history.unshift({ day:'Quick Slip', status:'Relapse Slip', exp:-actualLoss, date:new Date().toLocaleDateString() });
@@ -408,6 +446,8 @@ function executeSlip() {
   quickUndoTimer = setTimeout(() => {
     undoBtn.style.display = 'none';
     lastQuickSlipBackup = null;
+    state.lastQuickSlipBackup = null;
+    saveState();
   }, 10000);
 
   updateGraph();
@@ -419,8 +459,9 @@ function undoQuickSlip() {
   if (!lastQuickSlipBackup) return;
   state.exp = lastQuickSlipBackup.exp;
   state.streak = lastQuickSlipBackup.streak;
-  state.history = state.history.filter(h => h.day !== 'Quick Slip');
+  state.history = lastQuickSlipBackup.history || state.history.filter(h => h.day !== 'Quick Slip');
   lastQuickSlipBackup = null;
+  state.lastQuickSlipBackup = null;
   document.getElementById('quickUndoBtn').style.display = 'none';
   updateGraph();
   saveState();
@@ -459,11 +500,39 @@ function claimTrial() {
 }
 
 
+function resetDailyQuestsIfNeeded() {
+  const today = getLocalDateKey();
+  if (state.lastQuestDate === today) return false;
+  // Daily habits reset at the date boundary; earned EXP and history remain.
+  (state.quests || []).forEach(q => q.done = false);
+  (state.customQuests || []).forEach(q => q.done = false);
+  state.lastQuestDate = today;
+  return true;
+}
+
+function checkPerfectDayBonus() {
+  const today = getLocalDateKey();
+  if (!Array.isArray(state.quests) || state.quests.length !== 7) return false;
+  if (!state.quests.every(q => q.done) || state.perfectDayClaims[today]) return false;
+  state.perfectDayClaims[today] = true;
+  state.exp += 200;
+  state.history.unshift({
+    day: 'Perfect Day',
+    status: 'All 7 daily habits completed',
+    exp: 200,
+    date: new Date().toLocaleDateString(),
+    dateKey: today,
+    source: 'perfect-day'
+  });
+  updateGraph();
+  return true;
+}
 function toggleQuest(id) {
   const q = state.quests.find(item => item.id === id);
   if (!q) return;
   q.done = !q.done;
   state.exp = q.done ? state.exp + 100 : Math.max(0, state.exp - 100);
+  checkPerfectDayBonus();
   updateGraph();
   saveState();
 }
@@ -508,6 +577,7 @@ function updateGraph() {
 }
 
 function render() {
+  resetDailyQuestsIfNeeded();
   const curRank = getCurrentRank(state.exp);
   const nextRank = getNextRank(state.exp);
 
@@ -533,22 +603,27 @@ function render() {
   // Calendar
   const grid = document.getElementById('calGrid');
   grid.innerHTML = '';
-  for (let i = 1; i <= 30; i++) {
+  const monthKey = state.calendarMonth || getLocalDateKey().slice(0,7);
+  const monthDate = parseMonthKey(monthKey);
+  document.getElementById('calendarMonthLabel').innerText = monthDate.toLocaleDateString(undefined,{month:'short',year:'numeric'}).toUpperCase();
+  const firstWeekday = new Date(monthDate.getFullYear(),monthDate.getMonth(),1).getDay();
+  const daysInMonth = new Date(monthDate.getFullYear(),monthDate.getMonth()+1,0).getDate();
+  for (let blank=0; blank<firstWeekday; blank++) {
+    const spacer=document.createElement('div'); spacer.style.aspectRatio='1'; grid.appendChild(spacer);
+  }
+  for (let i = 1; i <= daysInMonth; i++) {
     const cell = document.createElement('div');
     cell.className = 'cal-cell';
-    const rec = state.calendar[i];
+    const dayKey = `${monthKey}-${String(i).padStart(2,'0')}`;
+    const rec = state.calendar[dayKey];
     let icon = '·';
     if (rec) {
-      if (rec.status === 'clean') {
-        cell.classList.add('is-clean');
-        icon = '✓';
-      } else if (rec.status === 'slip') {
-        cell.classList.add('is-slip');
-        icon = '✕';
-      }
+      if (rec.status === 'clean') { cell.classList.add('is-clean'); icon = '✓'; }
+      else if (rec.status === 'slip') { cell.classList.add('is-slip'); icon = '✕'; }
     }
+    if (dayKey === getLocalDateKey()) cell.style.outline = '1px solid var(--accent-cyan)';
     cell.innerHTML = `<span class="cal-num">${i}</span><span class="cal-status">${icon}</span>`;
-    cell.onclick = () => openDayModal(i);
+    cell.onclick = () => openDayModal(dayKey);
     grid.appendChild(cell);
   }
 
@@ -590,6 +665,20 @@ function render() {
     trialBtn.disabled = false;
     trialBtn.style.opacity = '1';
   }
+
+  // Perfect-day progress and once-per-date bonus status.
+  const completedHabits = state.quests.filter(q => q.done).length;
+  let perfectDayStatus = document.getElementById('perfectDayStatus');
+  if (!perfectDayStatus) {
+    perfectDayStatus = document.createElement('div');
+    perfectDayStatus.id = 'perfectDayStatus';
+    perfectDayStatus.style.cssText = 'font-size:12px;color:var(--text-muted);margin:0 0 10px;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--bg-subtle);';
+    document.getElementById('dailyQuestsList').parentNode.insertBefore(perfectDayStatus, document.getElementById('dailyQuestsList'));
+  }
+  const bonusClaimed = !!state.perfectDayClaims[getLocalDateKey()];
+  perfectDayStatus.innerText = bonusClaimed
+    ? `🏆 PERFECT DAY COMPLETE · +200 BONUS EXP CLAIMED`
+    : `🎯 DAILY HABITS: ${completedHabits}/7 · Complete all 7 for +200 BONUS EXP`;
 
   // Quests (Entire row is clickable)
   const qWrap = document.getElementById('dailyQuestsList');
@@ -634,7 +723,7 @@ function render() {
     histBox.innerHTML = state.history.map(h => `
       <div style="border-bottom:1px solid var(--border); padding:8px 0;">
         <div style="display:flex; justify-content:space-between; font-weight:700;">
-          <span style="color:var(--text-white);">${typeof h.day === 'number' ? 'Nov ' + h.day : h.day}</span>
+          <span style="color:var(--text-white);">${h.dateKey ? h.dateKey : (typeof h.day === 'number' ? 'Nov ' + h.day : h.day)}</span>
           <span style="color:${h.exp >= 0 ? 'var(--neon-purple)' : 'var(--accent-red)'};">${h.exp >= 0 ? '+' : ''}${h.exp} EXP</span>
         </div>
         <div style="font-size:11px; color:var(--text-muted);">${h.status} · ${h.date || ''}</div>
@@ -701,10 +790,18 @@ let urgeInterval = null;
 let urgeSeconds = 180;
 function openUrgeModal() {
   urgeSeconds = 180;
-  document.getElementById('urgeTimer').innerText = '03:00';
+  const today = getLocalDateKey();
+  const claimed = !!state.urgeClaims[today];
+  document.getElementById('urgeTimer').innerText = claimed ? 'DONE' : '03:00';
   document.getElementById('urgeClaimBtn').style.display = 'none';
+  document.getElementById('urgeClaimBtn').disabled = claimed;
+  document.getElementById('urgeClaimBtn').innerText = claimed ? '✓ Reward already claimed today' : '✓ Defeated Boss (+150 EXP)';
   document.getElementById('urgeModal').classList.add('open');
   clearInterval(urgeInterval);
+  if (claimed) {
+    document.getElementById('urgeModal').classList.add('open');
+    return;
+  }
   urgeInterval = setInterval(() => {
     urgeSeconds--;
     const m = String(Math.floor(urgeSeconds / 60)).padStart(2, '0');
@@ -718,7 +815,12 @@ function openUrgeModal() {
 }
 
 function claimUrgeVictory() {
+  const today = getLocalDateKey();
+  if (state.urgeClaims[today]) return;
+  if (urgeSeconds > 0) return;
+  state.urgeClaims[today] = true;
   state.exp += 150;
+  state.history.unshift({day:'Urge Boss',status:'Urge timer completed',exp:150,date:new Date().toLocaleDateString(),dateKey:today,source:'urge'});
   updateGraph();
   closeUrgeModal();
   saveState();
@@ -732,8 +834,72 @@ function closeUrgeModal() {
 function openHistoryModal() { document.getElementById('historyModal').classList.add('open'); }
 function closeModal(id) { document.getElementById(id).classList.remove('open'); }
 
+
+function exportBackup() {
+  const blob = new Blob([JSON.stringify(state,null,2)], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `hunter-hub-backup-${getLocalDateKey()}.json`;
+  document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+  document.getElementById('systemMessage').innerText = 'Backup exported. Keep the JSON file somewhere safe.';
+}
+function importBackup(event) {
+  const file = event.target.files && event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const incoming = JSON.parse(reader.result);
+      if (!incoming || typeof incoming !== 'object' || !Number.isFinite(Number(incoming.exp)) || !Array.isArray(incoming.quests)) throw new Error('Invalid backup');
+      if (!confirm('Import this backup and replace the current tracker progress?')) return;
+      state = Object.assign(state, incoming);
+      if (!Array.isArray(state.trialHistory)) state.trialHistory = [];
+      resetDailyQuestsIfNeeded();
+      ensureDailyTrial();
+      saveState();
+      document.getElementById('systemMessage').innerText = 'Backup imported successfully.';
+    } catch (e) {
+      document.getElementById('systemMessage').innerText = 'Could not import: this file is not a valid Hunter Hub backup.';
+    } finally { event.target.value = ''; }
+  };
+  reader.readAsText(file);
+}
+function resetAllProgress() {
+  if (!confirm('This permanently resets EXP, streak, calendar, quests and history on this device. Export a backup first if needed.')) return;
+  localStorage.removeItem('hunterHubState_v6');
+  state = {
+    exp:0, streak:0, trialDone:false, dailyTrial:null, trialHistory:[], calendar:{},
+    quests:JSON.parse(JSON.stringify(DEFAULT_QUESTS)), customQuests:[], history:[],
+    graphHistory:[{day:'Start',exp:0,pmo:0}], lastQuestDate:null, perfectDayClaims:{}, urgeClaims:{},
+    calendarMonth:getLocalDateKey().slice(0,7), lastQuickSlipBackup:null
+  };
+  lastQuickSlipBackup = null;
+  resetDailyQuestsIfNeeded();
+  ensureDailyTrial();
+  saveState();
+  document.getElementById('systemMessage').innerText = 'Progress reset.';
+}
+
+let lastObservedDate = null;
+function checkDateBoundary() {
+  const today = getLocalDateKey();
+  if (lastObservedDate === null) {
+    lastObservedDate = today;
+    return;
+  }
+  if (today !== lastObservedDate) {
+    lastObservedDate = today;
+    resetDailyQuestsIfNeeded();
+    ensureDailyTrial();
+    saveState();
+  }
+}
 window.addEventListener('resize', drawGraph);
-window.onload = loadState;
+window.onload = () => {
+  loadState();
+  lastObservedDate = getLocalDateKey();
+  setInterval(checkDateBoundary, 15000);
+};
 </script>
 </body>
 </html>
