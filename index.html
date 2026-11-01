@@ -160,13 +160,14 @@ canvas { width:100%; height:100%; }
 <div id="ranksList"></div>
 
 <!-- Daily Hunter Trial -->
-<div class="card" style="margin-top:14px; border-color:rgba(157,78,221,0.3); cursor:pointer;" onclick="toggleTrial()">
+<div class="card" style="margin-top:14px; border-color:rgba(157,78,221,0.3);">
   <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
     <span style="font-size:11px; font-weight:800; color:var(--neon-purple);">⚔ DAILY HUNTER TRIAL</span>
-    <span style="font-size:11px; font-weight:800; color:var(--neon-purple);">+250 EXP</span>
+    <span id="trialReward" style="font-size:11px; font-weight:800; color:var(--neon-purple);">+100 EXP</span>
   </div>
-  <div style="font-size:13px; font-weight:700; margin-bottom:12px;">Shadowbox 3 Non-Stop High-Intensity Rounds</div>
-  <button class="modal-btn" id="trialBtn" style="background:var(--neon-purple-btn); color:#fff; margin-top:0; pointer-events:none;">CLAIM +250 EXP</button>
+  <div id="trialCategory" style="font-size:10px; color:var(--text-muted); margin-bottom:5px;">RANDOM DAILY CHALLENGE</div>
+  <div id="trialQuestText" style="font-size:13px; font-weight:700; margin-bottom:12px;">Preparing today's trial...</div>
+  <button class="modal-btn" id="trialBtn" onclick="claimTrial()" style="background:var(--neon-purple-btn); color:#fff; margin-top:0;">CLAIM REWARD</button>
 </div>
 
 <!-- Daily Quests -->
@@ -250,6 +251,8 @@ let state = {
   exp: 0,
   streak: 0,
   trialDone: false,
+  dailyTrial: null,
+  trialHistory: [],
   calendar: {}, // day: { status: 'clean'|'slip', expDelta: number, prevStreak: number }
   quests: JSON.parse(JSON.stringify(DEFAULT_QUESTS)),
   customQuests: [],
@@ -270,6 +273,8 @@ function loadState() {
   if (saved) {
     try { state = Object.assign(state, JSON.parse(saved)); } catch(e){}
   }
+  if (!Array.isArray(state.trialHistory)) state.trialHistory = [];
+  ensureDailyTrial();
   render();
 }
 
@@ -421,12 +426,38 @@ function undoQuickSlip() {
   saveState();
 }
 
-function toggleTrial() {
-  state.trialDone = !state.trialDone;
-  state.exp = state.trialDone ? state.exp + 250 : Math.max(0, state.exp - 250);
+const DAILY_TRIAL_POOL = [{"category":"Workout","text":"Do 5 minutes of gentle mobility before training","reward":100},{"category":"Workout","text":"Finish your planned workout without skipping the main lifts","reward":150},{"category":"Workout","text":"Record today’s workout sets and reps","reward":100},{"category":"Workout","text":"Do 2 sets of controlled push-ups, stopping before form breaks","reward":100},{"category":"Workout","text":"Train legs with your planned routine","reward":150},{"category":"Workout","text":"Do 3 sets of calf raises with controlled form","reward":100},{"category":"Workout","text":"Do 5 minutes of post-workout stretching","reward":100},{"category":"Workout","text":"Prepare your gym clothes and water bottle for tomorrow","reward":100},{"category":"Workout","text":"Take a short walk for recovery instead of extra exhausting cardio","reward":100},{"category":"Workout","text":"Check your workout form in a mirror or video for one exercise","reward":150},{"category":"Boxing","text":"Practise boxing stance and guard for 5 minutes","reward":100},{"category":"Boxing","text":"Do 3 relaxed shadowboxing rounds of 2 minutes","reward":150},{"category":"Boxing","text":"Practise footwork in 3 short rounds","reward":150},{"category":"Boxing","text":"Practise slips and rolls slowly for 5 minutes","reward":100},{"category":"Boxing","text":"Practise jab-cross technique with clean form for 5 minutes","reward":100},{"category":"Boxing","text":"Do 5 minutes of defensive movement without rushing","reward":100},{"category":"Boxing","text":"Review one boxing technique and practise it slowly","reward":150},{"category":"Boxing","text":"Do 3 rounds focused only on breathing and balance","reward":150},{"category":"Boxing","text":"Practise pivots and angle exits for 5 minutes","reward":100},{"category":"Boxing","text":"Cool down and loosen shoulders after boxing","reward":100},{"category":"Study","text":"Study one subject with your phone away for 20 minutes","reward":150},{"category":"Study","text":"Solve 5 mental-maths questions carefully","reward":100},{"category":"Study","text":"Revise one topic and write 3 key points from memory","reward":150},{"category":"Study","text":"Read 5 pages of a useful book","reward":100},{"category":"Study","text":"Complete one small pending college task","reward":150},{"category":"Study","text":"Practise English speaking aloud for 5 minutes","reward":100},{"category":"Study","text":"Learn 5 useful English words and make sentences with them","reward":100},{"category":"Study","text":"Explain one concept as if teaching a beginner","reward":150},{"category":"Study","text":"Organise notes for one subject for 10 minutes","reward":100},{"category":"Study","text":"Do a 25-minute focused study session with a short break after","reward":150},{"category":"Content","text":"Write 3 hooks for a future Reel or Short","reward":100},{"category":"Content","text":"Draft one 20–30 second script","reward":150},{"category":"Content","text":"Improve the first 2 seconds of an older script","reward":100},{"category":"Content","text":"Study one successful video and note its hook and pacing","reward":150},{"category":"Content","text":"Record a voiceover take for one piece of content","reward":150},{"category":"Content","text":"Edit one small section of a video","reward":150},{"category":"Content","text":"Create or improve one cover/title","reward":100},{"category":"Content","text":"Write one relatable example for a relationship topic","reward":100},{"category":"Content","text":"Review analytics for 10 minutes and note one lesson","reward":150},{"category":"Content","text":"Save 3 content ideas with a clear audience problem","reward":100},{"category":"Trading","text":"Review your trading rules before looking at charts","reward":100},{"category":"Trading","text":"Study one chart setup without placing a trade","reward":150},{"category":"Trading","text":"Write a short journal entry for a past trade","reward":100},{"category":"Trading","text":"Mark support and resistance on one chart for practice","reward":100},{"category":"Trading","text":"Review risk-to-reward on one hypothetical setup","reward":150},{"category":"Trading","text":"Backtest one setup on historical data for 15 minutes","reward":150},{"category":"Trading","text":"Write down what would invalidate your trade idea","reward":100},{"category":"Trading","text":"Review one mistake from your trading journal","reward":150},{"category":"Trading","text":"Spend 10 minutes learning a market concept","reward":100},{"category":"Trading","text":"Avoid impulsive trades and follow your written plan today","reward":150},{"category":"Communication","text":"Start one respectful conversation with someone","reward":150},{"category":"Communication","text":"Practise speaking slowly for 3 minutes","reward":100},{"category":"Communication","text":"Ask someone one thoughtful follow-up question","reward":100},{"category":"Communication","text":"Tell a short story with a beginning, middle and end","reward":150},{"category":"Communication","text":"Practise clear eye contact during one conversation","reward":100},{"category":"Communication","text":"Record a 1-minute speaking practice and review it kindly","reward":150},{"category":"Communication","text":"Explain your opinion in 3 clear sentences","reward":100},{"category":"Communication","text":"Listen without interrupting in one conversation","reward":150},{"category":"Communication","text":"Practise introducing yourself confidently for 2 minutes","reward":100},{"category":"Communication","text":"Replace filler words during a 2-minute speaking drill","reward":150},{"category":"Discipline","text":"Plan your top 3 priorities for tomorrow","reward":100},{"category":"Discipline","text":"Complete one 20-minute task before opening social media","reward":150},{"category":"Discipline","text":"Keep your phone away during one focused work block","reward":100},{"category":"Discipline","text":"Tidy your desk or workout area for 5 minutes","reward":100},{"category":"Discipline","text":"Finish one task you have been postponing","reward":150},{"category":"Discipline","text":"Do a 5-minute evening review: win, lesson, next step","reward":100},{"category":"Discipline","text":"Set a realistic bedtime reminder and prepare for it","reward":100},{"category":"Discipline","text":"Spend 10 minutes without scrolling or switching apps","reward":100},{"category":"Discipline","text":"Write down one trigger and a healthier response","reward":150},{"category":"Discipline","text":"Follow your planned routine even if motivation is low","reward":150},{"category":"Health","text":"Drink water regularly through the day","reward":100},{"category":"Health","text":"Include a protein-rich vegetarian food in a meal","reward":100},{"category":"Health","text":"Eat a proper meal without rushing or scrolling","reward":100},{"category":"Health","text":"Take 5 minutes for relaxed breathing","reward":100},{"category":"Health","text":"Get outside for daylight and a short walk","reward":100},{"category":"Health","text":"Prepare a simple snack instead of skipping a meal","reward":100},{"category":"Health","text":"Take a screen break and relax your eyes for 5 minutes","reward":100},{"category":"Health","text":"Do a gentle neck and shoulder mobility break","reward":100},{"category":"Health","text":"Keep a consistent wake-up time tomorrow by planning tonight","reward":100},{"category":"Health","text":"Notice your energy level and adjust training intensity sensibly","reward":150},{"category":"Mindset","text":"Write one thing you did well today and why","reward":100},{"category":"Mindset","text":"Read or listen to 10 minutes of educational material","reward":100},{"category":"Mindset","text":"Spend 5 minutes visualising the next useful action","reward":100},{"category":"Mindset","text":"Turn one vague goal into a specific 10-minute action","reward":100},{"category":"Mindset","text":"Write a short gratitude note without forcing positivity","reward":100},{"category":"Mindset","text":"Identify one distraction and remove it for an hour","reward":150},{"category":"Mindset","text":"Practise saying no to one low-value distraction","reward":150},{"category":"Mindset","text":"Review one personal value and act on it today","reward":100},{"category":"Mindset","text":"Do a 5-minute room reset before ending the day","reward":100},{"category":"Mindset","text":"Reflect on one setback and choose one practical correction","reward":150},{"category":"Life Skills","text":"Learn one basic clothing or grooming improvement","reward":100},{"category":"Life Skills","text":"Prepare tomorrow’s outfit so it fits and looks intentional","reward":100},{"category":"Life Skills","text":"Spend 10 minutes learning a useful computer or phone skill","reward":100},{"category":"Life Skills","text":"Check one expense and record it accurately","reward":100},{"category":"Life Skills","text":"Read one reliable article about a topic you want to understand","reward":100},{"category":"Life Skills","text":"Clean up 10 unnecessary files, tabs or screenshots","reward":100},{"category":"Life Skills","text":"Practise writing a clear professional message","reward":100},{"category":"Life Skills","text":"Do one small helpful task for your family or home","reward":100},{"category":"Life Skills","text":"Research one skill that could improve your future income","reward":150},{"category":"Life Skills","text":"Review this week’s progress and choose one adjustment","reward":150}];
+
+function getLocalDateKey() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
+function ensureDailyTrial() {
+  const today = getLocalDateKey();
+  if (state.dailyTrial && state.dailyTrial.date === today) return;
+  const recentIds = new Set((state.trialHistory || []).slice(-7).map(x => x.id));
+  let candidates = DAILY_TRIAL_POOL.map((q, i) => ({...q, id:i+1})).filter(q => !recentIds.has(q.id));
+  if (!candidates.length) candidates = DAILY_TRIAL_POOL.map((q, i) => ({...q, id:i+1}));
+  const chosen = candidates[Math.floor(Math.random() * candidates.length)];
+  state.dailyTrial = {...chosen, date:today, done:false};
+  state.trialDone = false;
+  saveState();
+}
+
+function claimTrial() {
+  ensureDailyTrial();
+  const trial = state.dailyTrial;
+  if (!trial || trial.done) return;
+  trial.done = true;
+  state.trialDone = true;
+  state.exp += trial.reward;
+  state.history.unshift({day:'Daily Trial', status:trial.category + ': ' + trial.text, exp:trial.reward, date:new Date().toLocaleDateString()});
+  state.trialHistory = (state.trialHistory || []).concat([{id:trial.id, date:trial.date}]).slice(-100);
   updateGraph();
   saveState();
 }
+
 
 function toggleQuest(id) {
   const q = state.quests.find(item => item.id === id);
@@ -539,16 +570,25 @@ function render() {
     ranksWrap.appendChild(item);
   });
 
-  // Daily Hunter Trial
+  // Daily Hunter Trial: one random, practical challenge per local day
+  ensureDailyTrial();
+  const trial = state.dailyTrial;
+  document.getElementById('trialReward').innerText = `+${trial.reward} EXP`;
+  document.getElementById('trialCategory').innerText = `${trial.category.toUpperCase()} • DAILY RANDOM CHALLENGE`;
+  document.getElementById('trialQuestText').innerText = trial.text;
   const trialBtn = document.getElementById('trialBtn');
-  if (state.trialDone) {
-    trialBtn.innerText = '✓ COMPLETED (+250 EXP)';
+  if (trial.done) {
+    trialBtn.innerText = `✓ COMPLETED (+${trial.reward} EXP)`;
     trialBtn.style.background = 'rgba(157,78,221,0.2)';
     trialBtn.style.border = '1px solid var(--neon-purple)';
+    trialBtn.disabled = true;
+    trialBtn.style.opacity = '0.85';
   } else {
-    trialBtn.innerText = 'CLAIM +250 EXP';
+    trialBtn.innerText = `CLAIM +${trial.reward} EXP`;
     trialBtn.style.background = 'var(--neon-purple-btn)';
     trialBtn.style.border = 'none';
+    trialBtn.disabled = false;
+    trialBtn.style.opacity = '1';
   }
 
   // Quests (Entire row is clickable)
