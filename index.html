@@ -197,6 +197,15 @@ canvas { width:100%; height:100%; }
   </div>
   <input id="backupFileInput" type="file" accept="application/json,.json" style="display:none" onchange="importBackup(event)">
   <button class="modal-btn" style="background:var(--bg-subtle);color:var(--accent-red);margin-top:10px;" onclick="resetAllProgress()">Reset All Progress</button>
+  <div id="systemActiveStats" style="margin-top:12px;padding:10px;border:1px solid var(--border);border-radius:10px;background:var(--bg-subtle);">
+    <div style="font-size:11px;font-weight:800;color:var(--accent-cyan);margin-bottom:5px;">⚔ SYSTEM ACTIVE</div>
+    <div id="systemActiveSummary" style="font-size:12px;line-height:1.6;color:var(--text-muted);"></div>
+    <div style="display:flex;gap:7px;flex-wrap:wrap;margin-top:8px;">
+      <button class="btn-add" style="padding:8px;flex:1;min-width:120px;" onclick="openPunishmentHistory()">Punishment History</button>
+      <button id="activePunishmentBtn" class="btn-add" style="padding:8px;flex:1;min-width:120px;display:none;" onclick="openPunishmentMission()">Active Recovery Mission</button>
+      <button id="useFreezeBtn" class="btn-add" style="padding:8px;flex:1;min-width:120px;display:none;" onclick="useFreeze()">Use 1 Freeze</button>
+    </div>
+  </div>
   <div id="systemMessage" style="font-size:11px;color:var(--text-muted);margin-top:8px;"></div>
 </div>
 
@@ -204,12 +213,21 @@ canvas { width:100%; height:100%; }
 <div class="modal-overlay" id="calModal">
   <div class="modal-card">
     <div style="font-size:18px; font-weight:900; margin-bottom:4px;" id="modalDayTitle">Day</div>
-    <div style="font-size:12px; color:var(--text-muted); margin-bottom:14px;" id="modalDaySub">Adjust status</div>
+    <div style="font-size:12px; color:var(--text-muted); margin-bottom:10px;" id="modalDaySub">Adjust status</div>
+    <div id="modalHistoryDetails" style="font-size:11px;line-height:1.5;color:var(--text-muted);margin-bottom:12px;white-space:pre-line;"></div>
     <button class="modal-btn" onclick="applyCalStatus('clean')" style="background:rgba(157,78,221,0.2); border:1px solid var(--neon-purple); color:var(--text-white);">✓ Mark Clean (Earn Daily EXP)</button>
     <button class="modal-btn" onclick="applyCalStatus('slip')" style="background:rgba(255,51,102,0.18); border:1px solid var(--accent-red); color:var(--accent-red);">⚠️ Mark Slip / Relapse</button>
     <button class="modal-btn" onclick="applyCalStatus('clear')" style="background:var(--bg-subtle); color:var(--accent-cyan); border:1px solid rgba(0,240,255,0.3);">↩️ Clear Record & Restore EXP</button>
     <button class="modal-btn" onclick="closeModal('calModal')" style="background:none; color:var(--text-dim); font-size:12px;">Cancel</button>
   </div>
+</div>
+
+<!-- Compact recovery/history dialogs (no permanent punishment panel) -->
+<div class="modal-overlay" id="punishmentMissionModal">
+  <div class="modal-card"><div style="font-size:18px;font-weight:900;margin-bottom:8px;">⚔ Recovery Mission</div><div id="punishmentMissionContent" style="font-size:12px;line-height:1.6;color:var(--text-muted);"></div><button class="modal-btn" onclick="closeModal('punishmentMissionModal')" style="background:var(--bg-subtle);color:var(--text-muted);">Close</button></div>
+</div>
+<div class="modal-overlay" id="punishmentHistoryModal">
+  <div class="modal-card"><div style="font-size:18px;font-weight:900;margin-bottom:8px;">Punishment History</div><div id="punishmentHistoryContent" style="font-size:12px;line-height:1.6;color:var(--text-muted);max-height:55vh;overflow:auto;"></div><button class="modal-btn" onclick="closeModal('punishmentHistoryModal')" style="background:var(--bg-subtle);color:var(--text-muted);">Close</button></div>
 </div>
 
 <!-- Urge Boss Modal -->
@@ -284,7 +302,12 @@ let state = {
   perfectDayClaims: {},
   urgeClaims: {},
   calendarMonth: null,
-  lastQuickSlipBackup: null
+  lastQuickSlipBackup: null,
+  freezeBalance: 0,
+  freezeUsedDates: {},
+  freezeMilestones: [],
+  habitSnapshots: {},
+  punishmentLog: []
 };
 
 let lastQuickSlipBackup = null;
@@ -307,6 +330,13 @@ function loadState() {
   if (!state.dailyPenaltyClaims || typeof state.dailyPenaltyClaims !== 'object') state.dailyPenaltyClaims = {};
   if (!state.punishmentClaims || typeof state.punishmentClaims !== 'object') state.punishmentClaims = {};
   if (!state.calendar || typeof state.calendar !== 'object') state.calendar = {};
+  if (!Number.isFinite(state.freezeBalance)) state.freezeBalance = 0;
+  state.freezeBalance = Math.max(0, Math.min(2, Number(state.freezeBalance) || 0));
+  if (!state.freezeUsedDates || typeof state.freezeUsedDates !== 'object') state.freezeUsedDates = {};
+  if (!Array.isArray(state.freezeMilestones)) state.freezeMilestones = [];
+  if (!state.habitSnapshots || typeof state.habitSnapshots !== 'object') state.habitSnapshots = {};
+  if (!Array.isArray(state.punishmentLog)) state.punishmentLog = [];
+  if (!Array.isArray(state.history)) state.history = [];
   // Migrate legacy day-number records into November 2026 date keys.
   Object.keys(state.calendar).forEach(k => {
     if (/^\d{1,2}$/.test(k)) {
@@ -385,6 +415,18 @@ function openDayModal(dayKey) {
   document.getElementById('modalDaySub').innerText = isHistorical
     ? (record ? `Historical record: ${record.status.toUpperCase()} · No EXP changes for backfilled dates` : 'Past date · You can record status, but no EXP will be added or removed')
     : (record ? `Status: ${record.status.toUpperCase()} (${record.expDelta >= 0 ? '+' : ''}${record.expDelta} EXP)` : `Current Rate: +${rate} EXP / clean day`);
+  const snapshot = state.habitSnapshots && state.habitSnapshots[dayKey];
+  const punishment = (state.punishmentLog || []).filter(p => p.sourceDate === dayKey || p.date === dayKey);
+  let details = snapshot ? 'Habit record: ' + snapshot.map(q => `${q.done ? '✓' : '✕'} ${q.name}`).join(' · ') : 'Habit-by-habit history was not stored for this date.';
+  if (punishment.length) details += '\n' + punishment.map(p => `Punishment: ${p.count} missed · ${p.severity} · ${p.penaltyApplied ? '−' + (p.expLoss || 0) + ' EXP applied' : p.done ? 'mission completed' : 'mission recorded'}`).join('\n');
+  if (state.freezeUsedDates && state.freezeUsedDates[dayKey]) details += '\n🧊 Freeze used: streak protected (punishment rules are unchanged).';
+  document.getElementById('modalHistoryDetails').innerText = details;
+  const freezeBtn = document.getElementById('useFreezeCalendarBtn');
+  if (freezeBtn) freezeBtn.remove();
+  if (dayKey === getLocalDateKey() && Number(state.freezeBalance) > 0 && !state.freezeUsedDates[dayKey]) {
+    const btn = document.createElement('button'); btn.id='useFreezeCalendarBtn'; btn.className='modal-btn'; btn.textContent=`🧊 Use Freeze (${state.freezeBalance} available) — protect streak only`; btn.style.cssText='background:rgba(0,240,255,0.12);color:var(--accent-cyan);border:1px solid var(--accent-cyan);'; btn.onclick=()=>{useFreeze(); openDayModal(dayKey);};
+    document.getElementById('modalHistoryDetails').insertAdjacentElement('afterend',btn);
+  }
   document.getElementById('calModal').classList.add('open');
 }
 
@@ -432,6 +474,7 @@ function applyCalStatus(type) {
     const previousStreak = state.streak;
     const reward = getDailyCleanExp(previousStreak);
     state.streak = previousStreak + 1;
+    maybeAwardFreeze();
     state.exp += reward;
     state.calendar[selectedDay] = {status:'clean', expDelta:reward, prevStreak:previousStreak};
     state.history.unshift({day:selectedDay,status:'Clean',exp:reward,date:new Date().toLocaleDateString(),dateKey:selectedDay,source:'calendar'});
@@ -440,8 +483,8 @@ function applyCalStatus(type) {
     const maxPenalty = previousStreak < 5 ? 1100 : 200;
     const actualLoss = Math.min(Math.max(0,state.exp), maxPenalty);
     state.exp -= actualLoss;
-    state.streak = 0;
-    state.calendar[selectedDay] = {status:'slip',expDelta:-actualLoss,prevStreak:previousStreak};
+    if (!state.freezeUsedDates || !state.freezeUsedDates[selectedDay]) state.streak = 0;
+    state.calendar[selectedDay] = {status:'slip',expDelta:-actualLoss,prevStreak:previousStreak,streakProtected:!!(state.freezeUsedDates && state.freezeUsedDates[selectedDay])};
     state.history.unshift({day:selectedDay,status:'Relapse Slip',exp:-actualLoss,date:new Date().toLocaleDateString(),dateKey:selectedDay,source:'calendar'});
   } else if (type === 'clear') {
     delete state.calendar[selectedDay];
@@ -578,6 +621,7 @@ function completeDailyPunishment() {
   const p = state.dailyPunishment;
   if (!p || p.date !== getLocalDateKey() || p.done) return;
   p.done = true;
+  const logEntry = (state.punishmentLog || []).find(x => x.date === p.date); if (logEntry) logEntry.done = true;
   saveState();
 }
 
@@ -589,6 +633,8 @@ function checkPunishmentDeadline() {
   state.exp = Math.max(0, Number(state.exp) - 1000);
   p.penaltyApplied = true;
   p.expLoss = loss;
+  const logEntry = (state.punishmentLog || []).find(x => x.date === p.date);
+  if (logEntry) { logEntry.penaltyApplied = true; logEntry.expLoss = loss; }
   state.punishmentClaims = state.punishmentClaims || {};
   state.punishmentClaims[p.date] = true;
   state.history.unshift({
@@ -628,9 +674,9 @@ function resetDailyQuestsIfNeeded() {
 
   // Capture yesterday's missed habits BEFORE resetting their done flags.
   const previousDate = state.lastQuestDate;
-  const missed = previousDate && Array.isArray(state.quests)
-    ? state.quests.filter(q => !q.done)
-    : [];
+  const trackedQuests = Array.isArray(state.quests) ? state.quests : [];
+  if (previousDate) state.habitSnapshots[previousDate] = trackedQuests.map(q => ({id:q.id,name:q.name,done:!!q.done}));
+  const missed = previousDate ? trackedQuests.filter(q => !q.done) : [];
 
   // Update consecutive-miss counters once for each tracked day transition.
   if (previousDate && Array.isArray(state.quests)) {
@@ -649,9 +695,10 @@ function resetDailyQuestsIfNeeded() {
       return {name:q.name, task:getHabitRecoveryTask(q, missStreak), missStreak};
     });
     state.dailyPunishment = {
-      date: today, sourceDate: previousDate, count: missed.length, severity, recovery,
+      date: today, sourceDate: previousDate, count: missed.length, missedHabits: missed.map(q => q.name), severity, recovery,
       done: false, createdAt: Date.now(), penaltyApplied: false
     };
+    state.punishmentLog.push({date:today,sourceDate:previousDate,count:missed.length,missedHabits:missed.map(q=>q.name),severity,done:false,penaltyApplied:false,expLoss:0});
   } else if (!state.dailyPunishment || state.dailyPunishment.date < today) {
     // Don't leave an expired mission looking like today's active mission.
     state.dailyPunishment = null;
@@ -662,6 +709,55 @@ function resetDailyQuestsIfNeeded() {
   (state.customQuests || []).forEach(q => q.done = false);
   state.lastQuestDate = today;
   return true;
+}
+
+function renderSystemActiveStats() {
+  const penalties = (state.history || []).filter(h => h.source === 'punishment-penalty').length;
+  const cleanStreak = Math.max(0, Number(state.streak) || 0);
+  const balance = Math.max(0, Math.min(2, Number(state.freezeBalance) || 0));
+  const progress = cleanStreak % 7;
+  document.getElementById('systemActiveSummary').innerText = `Punishments received: ${penalties} · Clean streak: ${cleanStreak} day(s) · Freezes: ${balance}/2${balance < 2 ? ` · Next freeze in ${7-progress} clean day(s)` : ' · Freeze storage full'}`;
+  const p = state.dailyPunishment;
+  const active = !!(p && p.date === getLocalDateKey() && !p.done);
+  const missionBtn = document.getElementById('activePunishmentBtn'); if (missionBtn) missionBtn.style.display = active ? 'inline-block' : 'none';
+  const freezeBtn = document.getElementById('useFreezeBtn'); if (freezeBtn) freezeBtn.style.display = balance > 0 && !state.freezeUsedDates[getLocalDateKey()] ? 'inline-block' : 'none';
+}
+function openPunishmentMission() {
+  const p = state.dailyPunishment;
+  const el = document.getElementById('punishmentMissionContent');
+  if (!p) { el.innerText = 'No recovery mission recorded.'; }
+  else {
+    const tasks = (p.recovery || []).map(r => `• ${r.name}: ${r.task}`).join('\n');
+    el.innerText = `${p.severity} · ${p.count} missed habit(s)\nMissed on: ${p.sourceDate || 'date not recorded'}\nDeadline: midnight at the end of ${p.date}.\n\n${tasks}\n\n${p.done ? 'Mission completed — no penalty.' : p.penaltyApplied ? `Deadline missed; ${p.expLoss || 0} EXP penalty applied.` : 'Complete the recovery mission below to avoid the penalty.'}`;
+    if (p.date === getLocalDateKey() && !p.done) el.innerHTML += `<br><button class="btn-add" style="width:100%;padding:11px;margin-top:8px;" onclick="completeDailyPunishment();closeModal('punishmentMissionModal')">✓ Complete Combined Mission</button>`;
+  }
+  document.getElementById('punishmentMissionModal').classList.add('open');
+}
+function openPunishmentHistory() {
+  const entries = [...(state.punishmentLog || [])].reverse();
+  const el = document.getElementById('punishmentHistoryContent');
+  if (!entries.length) { el.innerText = 'No punishments recorded yet. Missed habits will be logged automatically at the next day reset.'; }
+  else el.innerHTML = entries.map(p => `<div style="padding:9px 0;border-bottom:1px solid var(--border);"><b>${escapeHtml(p.date || 'Unknown date')} · ${escapeHtml(p.severity || 'RECOVERY')}</b><br>Missed on: ${escapeHtml(p.sourceDate || 'unknown')} · ${Number(p.count)||0} habit(s)<br>Habits: ${escapeHtml((p.missedHabits || []).join(', ') || 'Not stored')}<br>Status: ${p.done ? 'Mission completed' : p.penaltyApplied ? `Penalty applied: −${Number(p.expLoss)||0} EXP` : 'No penalty recorded yet'}</div>`).join('');
+  document.getElementById('punishmentHistoryModal').classList.add('open');
+}
+function useFreeze() {
+  const today = getLocalDateKey();
+  if (Number(state.freezeBalance) <= 0) { alert('No freezes available.'); return; }
+  if (state.freezeUsedDates[today]) { alert('A freeze has already been used today.'); return; }
+  state.freezeBalance = Math.max(0, Number(state.freezeBalance) - 1);
+  state.freezeUsedDates[today] = true;
+  const rec = state.calendar[today];
+  if (rec && rec.status === 'slip' && Number.isFinite(rec.prevStreak)) { state.streak = rec.prevStreak; rec.streakProtected = true; }
+  state.history.unshift({day:'Streak Freeze',status:'Freeze used; streak protected only',exp:0,date:new Date().toLocaleDateString(),dateKey:today,source:'freeze'});
+  saveState();
+}
+function maybeAwardFreeze() {
+  const streak = Math.max(0, Number(state.streak) || 0);
+  if (!streak || streak % 7 !== 0) return;
+  const milestone = String(streak);
+  if (state.freezeMilestones.includes(milestone)) return;
+  state.freezeMilestones.push(milestone);
+  if (state.freezeBalance < 2) state.freezeBalance++;
 }
 
 function checkPerfectDayBonus() {
@@ -853,22 +949,7 @@ function render() {
     ? `🏆 PERFECT DAY COMPLETE · +200 BONUS EXP CLAIMED`
     : `🎯 DAILY HABITS: ${completedHabits}/7 · Complete all 7 for +200 BONUS EXP`;
 
-  let punishmentStatus = document.getElementById('punishmentStatus');
-  if (!punishmentStatus) {
-    punishmentStatus = document.createElement('div');
-    punishmentStatus.id = 'punishmentStatus';
-    punishmentStatus.style.cssText = 'font-size:12px;color:var(--text-muted);margin:0 0 10px;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--bg-subtle);line-height:1.5;';
-    perfectDayStatus.insertAdjacentElement('afterend', punishmentStatus);
-  }
-  const lastPunishment = state.dailyPunishment;
-  if (lastPunishment && lastPunishment.count > 0) {
-    const taskText = (lastPunishment.recovery || []).map(r => `• ${r.name}: ${r.task}`).join('\n');
-    punishmentStatus.style.whiteSpace = 'pre-line';
-    punishmentStatus.innerText = `⚠️ LAST DAY: ${lastPunishment.count}/7 MISSED · ${lastPunishment.severity} · −${lastPunishment.expLoss} EXP\nRecovery tasks (not extra EXP penalties):\n${taskText}`;
-  } else {
-    punishmentStatus.style.whiteSpace = 'normal';
-    punishmentStatus.innerText = '⚔️ HUNTER PENALTY: Missed habits trigger −1,000 EXP once per day at the next day reset. More misses = higher severity; repeated misses add a recovery-planning task.';
-  }
+  renderSystemActiveStats();
 
   // Quests (Entire row is clickable)
   const qWrap = document.getElementById('dailyQuestsList');
@@ -1062,7 +1143,7 @@ function resetAllProgress() {
     exp:0, streak:0, trialDone:false, dailyTrial:null, trialHistory:[], calendar:{},
     quests:JSON.parse(JSON.stringify(DEFAULT_QUESTS)), customQuests:[], history:[],
     graphHistory:[{day:'Start',exp:0,pmo:0}], lastQuestDate:null, habitMissStreaks:{}, dailyPenaltyClaims:{}, dailyPunishment:null, perfectDayClaims:{}, urgeClaims:{},
-    calendarMonth:getLocalDateKey().slice(0,7), lastQuickSlipBackup:null
+    calendarMonth:getLocalDateKey().slice(0,7), lastQuickSlipBackup:null, freezeBalance:0, freezeUsedDates:{}, freezeMilestones:[], habitSnapshots:{}, punishmentLog:[]
   };
   lastQuickSlipBackup = null;
   resetDailyQuestsIfNeeded();
