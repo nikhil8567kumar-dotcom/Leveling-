@@ -186,6 +186,13 @@ canvas { width:100%; height:100%; }
 </div>
 <div id="customQuestsList"></div>
 
+<div class="section-hdr">⚔️ Hunter Punishment</div>
+<div class="card" id="punishmentCard">
+  <div style="font-size:12px;color:var(--text-muted);line-height:1.5;margin-bottom:10px;">At midnight, one combined recovery mission is created automatically for yesterday’s missed habits. You have the full new day to complete it; only an unfinished mission at the following midnight triggers −1,000 EXP.</div>
+  <button class="btn-add" style="width:100%;padding:11px;" onclick="generateDailyPunishment()">⚔ Generate Combined Mission</button>
+  <div id="punishmentContent" style="margin-top:10px;"></div>
+</div>
+
 <div class="section-hdr">System & Backups</div>
 <div class="card">
   <div style="font-size:12px;color:var(--text-muted);line-height:1.5;margin-bottom:10px;">Your progress is stored in this browser on this device. Export a backup before clearing browser data or changing phones. There is no visible one-tap reset button, to protect against accidental data loss.</div>
@@ -275,6 +282,10 @@ let state = {
   history: [],
   graphHistory: [{ day:'Start', exp:0, pmo:0 }],
   lastQuestDate: null,
+  habitMissStreaks: {},
+  dailyPenaltyClaims: {},
+  dailyPunishment: null,
+  punishmentClaims: {},
   perfectDayClaims: {},
   urgeClaims: {},
   calendarMonth: null,
@@ -297,6 +308,9 @@ function loadState() {
   if (!Array.isArray(state.trialHistory)) state.trialHistory = [];
   if (!state.urgeClaims || typeof state.urgeClaims !== 'object') state.urgeClaims = {};
   if (!state.perfectDayClaims || typeof state.perfectDayClaims !== 'object') state.perfectDayClaims = {};
+  if (!state.habitMissStreaks || typeof state.habitMissStreaks !== 'object') state.habitMissStreaks = {};
+  if (!state.dailyPenaltyClaims || typeof state.dailyPenaltyClaims !== 'object') state.dailyPenaltyClaims = {};
+  if (!state.punishmentClaims || typeof state.punishmentClaims !== 'object') state.punishmentClaims = {};
   if (!state.calendar || typeof state.calendar !== 'object') state.calendar = {};
   // Migrate legacy day-number records into November 2026 date keys.
   Object.keys(state.calendar).forEach(k => {
@@ -527,10 +541,128 @@ function claimTrial() {
 }
 
 
+function getHabitRecoveryTask(q, missStreak) {
+  const id = Number(q.id);
+  const tasks = {
+    1: 'Morning affirmations: say or write 3 realistic affirmations for 2 minutes.',
+    2: 'Meditation: complete a calm 5-minute meditation or breathing session.',
+    3: 'Workout + Boxing: do 5 minutes of safe mobility or schedule the next workout; no punishment workout.',
+    4: 'Daily reading: read 2 pages now and note one useful idea.',
+    5: 'Human interaction: start one respectful conversation or send a thoughtful message.',
+    6: 'Income/content action: spend 10 focused minutes on one small content or income task.',
+    7: 'Night affirmations: write one lesson from today and one intention for tomorrow.'
+  };
+  const base = tasks[id] || `Recovery task: spend 5–10 focused minutes completing a small version of “${q.name}”.`;
+  if (missStreak >= 3) return base + ' Repeated miss: also identify the obstacle and make tomorrow’s task smaller/easier to start.';
+  if (missStreak === 2) return base + ' Second miss in a row: prepare the time/place or materials before bed.';
+  return base;
+}
+
+function generateDailyPunishment() {
+  const today = getLocalDateKey();
+  const missed = (state.quests || []).filter(q => !q.done);
+  if (!missed.length) {
+    alert('All 7 daily habits are complete. No punishment mission needed.');
+    return;
+  }
+  const severity = missed.length === 1 ? 'MINOR' : missed.length <= 3 ? 'MODERATE' : missed.length <= 5 ? 'SEVERE' : 'CRITICAL';
+  const recovery = missed.map(q => {
+    const key = String(q.id);
+    const missStreak = Number(state.habitMissStreaks[key] || 0) + 1;
+    return {name:q.name, task:getHabitRecoveryTask(q, missStreak), missStreak};
+  });
+  // One combined mission containing the corrective actions for all missed habits.
+  state.dailyPunishment = {
+    date: today, count: missed.length, severity, recovery,
+    done: false, createdAt: Date.now(), penaltyApplied: false
+  };
+  saveState();
+}
+
+function completeDailyPunishment() {
+  const p = state.dailyPunishment;
+  if (!p || p.date !== getLocalDateKey() || p.done) return;
+  p.done = true;
+  saveState();
+}
+
+function checkPunishmentDeadline() {
+  const today = getLocalDateKey();
+  const p = state.dailyPunishment;
+  if (!p || !p.date || p.date >= today || p.done || p.penaltyApplied) return;
+  const loss = Math.min(Math.max(0, Number(state.exp) || 0), 1000);
+  state.exp = Math.max(0, Number(state.exp) - 1000);
+  p.penaltyApplied = true;
+  p.expLoss = loss;
+  state.punishmentClaims = state.punishmentClaims || {};
+  state.punishmentClaims[p.date] = true;
+  state.history.unshift({
+    day:'Hunter Punishment Penalty',
+    status:`${p.severity}: combined mission incomplete`,
+    exp:-loss, date:p.date, dateKey:p.date, source:'punishment-penalty'
+  });
+  updateGraph();
+}
+
+function escapeHtml(value) {
+  return String(value == null ? '' : value).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+}
+
+function renderPunishment() {
+  const el = document.getElementById('punishmentContent');
+  if (!el) return;
+  const p = state.dailyPunishment;
+  if (!p) {
+    el.innerHTML = '<div style="font-size:12px;color:var(--text-muted);">No punishment mission is active. If you miss habits, a combined mission is created automatically at midnight.</div>';
+    return;
+  }
+  const isToday = p.date === getLocalDateKey();
+  const done = !!p.done;
+  const tasks = (p.recovery || []).map(r => `<li style="margin:6px 0;">${escapeHtml(r.name)}: ${escapeHtml(r.task)}</li>`).join('');
+  el.innerHTML = `<div style="font-weight:900;margin-bottom:6px;">${escapeHtml(p.severity || 'RECOVERY')} · ${p.count || 0} habit(s) missed</div>
+    <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">${done ? '✅ Mission complete — no EXP penalty.' : (isToday ? 'Deadline: midnight tonight.' : (p.penaltyApplied ? '❌ Deadline missed. −1,000 EXP penalty processed.' : 'Mission expired.'))}</div>
+    <ul style="padding-left:18px;font-size:12px;line-height:1.5;">${tasks}</ul>
+    ${isToday && !done ? '<button class="btn-add" style="width:100%;padding:11px;margin-top:8px;" onclick="completeDailyPunishment()">✓ Complete Combined Mission</button>' : ''}`;
+}
+
 function resetDailyQuestsIfNeeded() {
   const today = getLocalDateKey();
+  // First process yesterday's punishment deadline. A mission gets one full day.
+  checkPunishmentDeadline();
   if (state.lastQuestDate === today) return false;
-  // Daily habits reset at the date boundary; earned EXP and history remain.
+
+  // Capture yesterday's missed habits BEFORE resetting their done flags.
+  const previousDate = state.lastQuestDate;
+  const missed = previousDate && Array.isArray(state.quests)
+    ? state.quests.filter(q => !q.done)
+    : [];
+
+  // Update consecutive-miss counters once for each tracked day transition.
+  if (previousDate && Array.isArray(state.quests)) {
+    state.quests.forEach(q => {
+      const key = String(q.id);
+      state.habitMissStreaks[key] = q.done ? 0 : (Number(state.habitMissStreaks[key] || 0) + 1);
+    });
+  }
+
+  // Automatically create ONE combined mission for yesterday's missed habits.
+  // Its date is TODAY, so the user has until the NEXT midnight to complete it.
+  if (missed.length) {
+    const severity = missed.length === 1 ? 'MINOR' : missed.length <= 3 ? 'MODERATE' : missed.length <= 5 ? 'SEVERE' : 'CRITICAL';
+    const recovery = missed.map(q => {
+      const missStreak = Number(state.habitMissStreaks[String(q.id)] || 1);
+      return {name:q.name, task:getHabitRecoveryTask(q, missStreak), missStreak};
+    });
+    state.dailyPunishment = {
+      date: today, sourceDate: previousDate, count: missed.length, severity, recovery,
+      done: false, createdAt: Date.now(), penaltyApplied: false
+    };
+  } else if (!state.dailyPunishment || state.dailyPunishment.date < today) {
+    // Don't leave an expired mission looking like today's active mission.
+    state.dailyPunishment = null;
+  }
+
+  // Reset standard habits and custom quests at the local date boundary.
   (state.quests || []).forEach(q => q.done = false);
   (state.customQuests || []).forEach(q => q.done = false);
   state.lastQuestDate = today;
@@ -726,6 +858,23 @@ function render() {
     ? `🏆 PERFECT DAY COMPLETE · +200 BONUS EXP CLAIMED`
     : `🎯 DAILY HABITS: ${completedHabits}/7 · Complete all 7 for +200 BONUS EXP`;
 
+  let punishmentStatus = document.getElementById('punishmentStatus');
+  if (!punishmentStatus) {
+    punishmentStatus = document.createElement('div');
+    punishmentStatus.id = 'punishmentStatus';
+    punishmentStatus.style.cssText = 'font-size:12px;color:var(--text-muted);margin:0 0 10px;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--bg-subtle);line-height:1.5;';
+    perfectDayStatus.insertAdjacentElement('afterend', punishmentStatus);
+  }
+  const lastPunishment = state.dailyPunishment;
+  if (lastPunishment && lastPunishment.count > 0) {
+    const taskText = (lastPunishment.recovery || []).map(r => `• ${r.name}: ${r.task}`).join('\n');
+    punishmentStatus.style.whiteSpace = 'pre-line';
+    punishmentStatus.innerText = `⚠️ LAST DAY: ${lastPunishment.count}/7 MISSED · ${lastPunishment.severity} · −${lastPunishment.expLoss} EXP\nRecovery tasks (not extra EXP penalties):\n${taskText}`;
+  } else {
+    punishmentStatus.style.whiteSpace = 'normal';
+    punishmentStatus.innerText = '⚔️ HUNTER PENALTY: Missed habits trigger −1,000 EXP once per day at the next day reset. More misses = higher severity; repeated misses add a recovery-planning task.';
+  }
+
   // Quests (Entire row is clickable)
   const qWrap = document.getElementById('dailyQuestsList');
   qWrap.innerHTML = '';
@@ -778,6 +927,7 @@ function render() {
   }
 
   drawGraph();
+  renderPunishment();
 }
 
 function drawGraph() {
@@ -916,7 +1066,7 @@ function resetAllProgress() {
   state = {
     exp:0, streak:0, trialDone:false, dailyTrial:null, trialHistory:[], calendar:{},
     quests:JSON.parse(JSON.stringify(DEFAULT_QUESTS)), customQuests:[], history:[],
-    graphHistory:[{day:'Start',exp:0,pmo:0}], lastQuestDate:null, perfectDayClaims:{}, urgeClaims:{},
+    graphHistory:[{day:'Start',exp:0,pmo:0}], lastQuestDate:null, habitMissStreaks:{}, dailyPenaltyClaims:{}, dailyPunishment:null, perfectDayClaims:{}, urgeClaims:{},
     calendarMonth:getLocalDateKey().slice(0,7), lastQuickSlipBackup:null
   };
   lastQuickSlipBackup = null;
